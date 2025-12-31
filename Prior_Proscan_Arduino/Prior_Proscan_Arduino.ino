@@ -576,7 +576,7 @@ void parseAndExecute(char* cmd) {
   }
   else {
     // Unknown command - send error
-    Serial.print("E,1\r");  // Unknown command error
+    Serial.print("E,5\r");  // Command not found
   }
 }
 
@@ -1426,7 +1426,7 @@ void cmd_7(char* args) {
 
   // Validate wheel number (1-3)
   if (wheelNum < 1 || wheelNum > 3) {
-    Serial.print("E,1\r");  // Invalid parameter
+    Serial.print("E,10\r");  // ARG1 OUT OF RANGE
     return;
   }
 
@@ -1434,12 +1434,18 @@ void cmd_7(char* args) {
 
   // Check if wheel is fitted
   if (!state.filterWheelFitted[wheelIdx]) {
-    Serial.print("E,17\r");  // No wheel fitted
+    Serial.print("E,17\r");  // WHEEL NOT FITTED
     return;
   }
 
   // Get the filter parameter (can be number or letter)
   skipDelimiters(&ptr);
+
+  // Check if filter parameter is missing
+  if (*ptr == '\0') {
+    Serial.print("E,4\r");  // STRING PARSE - missing filter parameter
+    return;
+  }
 
   // Check for letter commands
   if (*ptr == 'N' || *ptr == 'n') {
@@ -1488,7 +1494,7 @@ void cmd_7(char* args) {
     // Numeric position
     long position = parseNumber(&ptr);
     if (position < 1 || position > state.filterPositionsPerWheel[wheelIdx]) {
-      Serial.print("E,1\r");  // Invalid position
+      Serial.print("E,11\r");  // ARG2 OUT OF RANGE - invalid position
       return;
     }
     state.filterPosition[wheelIdx] = position;
@@ -1501,7 +1507,7 @@ void cmd_Filter(char* args) {
   long wheelNum = parseNumber(&args);
 
   if (wheelNum < 1 || wheelNum > 3) {
-    Serial.print("E,1\r");
+    Serial.print("E,10\r");  // ARG1 OUT OF RANGE
     return;
   }
 
@@ -1537,7 +1543,7 @@ void cmd_FPW(char* args) {
   long wheelNum = parseNumber(&ptr);
 
   if (wheelNum < 1 || wheelNum > 3) {
-    Serial.print("E,1\r");
+    Serial.print("E,10\r");  // ARG1 OUT OF RANGE
     return;
   }
 
@@ -1569,7 +1575,7 @@ void cmd_SAF(char* args) {
   long wheelNum = parseNumber(&ptr);
 
   if (wheelNum < 1 || wheelNum > 3) {
-    Serial.print("E,1\r");
+    Serial.print("E,10\r");  // ARG1 OUT OF RANGE
     return;
   }
 
@@ -1597,7 +1603,7 @@ void cmd_SCF(char* args) {
   long wheelNum = parseNumber(&ptr);
 
   if (wheelNum < 1 || wheelNum > 3) {
-    Serial.print("E,1\r");
+    Serial.print("E,10\r");  // ARG1 OUT OF RANGE
     return;
   }
 
@@ -1625,7 +1631,7 @@ void cmd_SMF(char* args) {
   long wheelNum = parseNumber(&ptr);
 
   if (wheelNum < 1 || wheelNum > 3) {
-    Serial.print("E,1\r");
+    Serial.print("E,10\r");  // ARG1 OUT OF RANGE
     return;
   }
 
@@ -1680,7 +1686,7 @@ void cmd_8(char* args) {
 
   // Validate shutter number (1-3)
   if (shutterNum < 1 || shutterNum > 3) {
-    Serial.print("E,1\r");  // Invalid parameter
+    Serial.print("E,6\r");  // INVALID SHUTTER
     return;
   }
 
@@ -1688,7 +1694,7 @@ void cmd_8(char* args) {
 
   // Check if shutter is fitted
   if (!state.shutterFitted[shutterIdx]) {
-    Serial.print("E,20\r");  // Shutter not fitted
+    Serial.print("E,20\r");  // SHUTTER NOT FITTED
     return;
   }
 
@@ -1705,7 +1711,7 @@ void cmd_8(char* args) {
   long command = parseNumber(&ptr);
 
   if (command != 0 && command != 1) {
-    Serial.print("E,1\r");  // Invalid parameter
+    Serial.print("E,11\r");  // ARG2 OUT OF RANGE
     return;
   }
 
@@ -1734,7 +1740,7 @@ void cmd_Shutter(char* args) {
   long shutterNum = parseNumber(&args);
 
   if (shutterNum < 1 || shutterNum > 3) {
-    Serial.print("E,1\r");
+    Serial.print("E,6\r");  // INVALID SHUTTER
     return;
   }
 
@@ -1799,7 +1805,7 @@ void cmd_Light(char* args) {
         state.lumenProPowerOn = (powerState == 1);
         Serial.print("R\r");
       } else {
-        Serial.print("E,1\r");
+        Serial.print("E,11\r");  // ARG2 OUT OF RANGE
       }
     }
     return;
@@ -1825,7 +1831,7 @@ void cmd_Light(char* args) {
       state.lumenProCurrentOutput = param1;
       Serial.print("0\r");
     } else {
-      Serial.print("E,1\r");  // Invalid parameter
+      Serial.print("E,10\r");  // ARG1 OUT OF RANGE
     }
     return;
   }
@@ -1833,7 +1839,7 @@ void cmd_Light(char* args) {
   // Two parameters: Either LIGHT P,n or LIGHT P,?
   // param1 is position P
   if (param1 < 1 || param1 > 10) {
-    Serial.print("E,1\r");  // Invalid position
+    Serial.print("E,10\r");  // ARG1 OUT OF RANGE - invalid position
     return;
   }
 
@@ -1853,6 +1859,6 @@ void cmd_Light(char* args) {
     state.lumenProPositionOutput[posIdx] = lightOutput;
     Serial.print("0\r");
   } else {
-    Serial.print("E,1\r");  // Invalid parameter
+    Serial.print("E,11\r");  // ARG2 OUT OF RANGE
   }
 }
