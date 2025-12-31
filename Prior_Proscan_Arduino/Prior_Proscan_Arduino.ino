@@ -96,6 +96,28 @@ struct ControllerState {
   long zMotionStartZ;
   long zMotionTargetZ;
   unsigned long zMotionDuration;
+
+  // Filter wheel state (3 wheels max)
+  bool filterWheelFitted[3];       // Which wheels are fitted
+  int filterPosition[3];            // Current position (1-based)
+  int filterPositionsPerWheel[3];  // Number of positions per wheel
+  int filterSpeed[3];               // Speed setting (1-100%)
+  int filterAccel[3];               // Acceleration setting (1-100%)
+  int filterSCurve[3];              // S-Curve setting (1-100%)
+  bool filterAutoHome[3];           // Auto home on startup
+  bool filterShutterClose;          // Auto close shutters during filter move
+
+  // Shutter state (3 shutters max)
+  bool shutterFitted[3];            // Which shutters are fitted
+  bool shutterState[3];             // Current state (false=open, true=closed)
+  bool shutterDefaultState[3];      // Default startup state (false=open, true=closed)
+  unsigned long shutterTimerEnd[3]; // Timer end time for timed shutter operations
+
+  // Lumen Pro state
+  bool lumenProFitted;              // Is Lumen Pro fitted
+  bool lumenProPowerOn;             // Power state (on/off)
+  int lumenProCurrentOutput;        // Current light output (0-100%)
+  int lumenProPositionOutput[10];   // Light output per position (1-10)
 } state;
 
 // Command buffer
@@ -165,6 +187,15 @@ void cmd_Stage();
 void cmd_Focus();
 void cmd_RES(char* args);
 void cmd_UPR(char* args);
+void cmd_7(char* args);
+void cmd_Filter(char* args);
+void cmd_FPW(char* args);
+void cmd_SAF(char* args);
+void cmd_SCF(char* args);
+void cmd_SMF(char* args);
+void cmd_8(char* args);
+void cmd_Shutter(char* args);
+void cmd_Light(char* args);
 
 // Motion helper functions
 void startXYMotion(long targetX, long targetY);
@@ -174,6 +205,9 @@ void updateXYMotion();
 void updateZMotion();
 void stopAllMotion();
 byte calculateMotionStatus();
+
+// Shutter helper functions
+void updateShutterTimers();
 
 void setup() {
   Serial.begin(DEFAULT_BAUD);
@@ -185,6 +219,9 @@ void loop() {
   // Update motion (interpolate position)
   updateXYMotion();
   updateZMotion();
+
+  // Update shutter timers
+  updateShutterTimers();
 
   // Read incoming serial data
   while (Serial.available() > 0) {
@@ -287,7 +324,46 @@ void initializeState() {
   state.zMotionStartZ = 0;
   state.zMotionTargetZ = 0;
   state.zMotionDuration = 0;
+
+  // Filter wheel initialization
+  for (int i = 0; i < 3; i++) {
+    state.filterWheelFitted[i] = true;  // All wheels fitted by default
+    state.filterPosition[i] = 1;          // Start at position 1
+    state.filterPositionsPerWheel[i] = 10; // Default 10 positions
+    state.filterSpeed[i] = 50;            // Default 50% speed
+    state.filterAccel[i] = 50;            // Default 50% acceleration
+    state.filterSCurve[i] = 50;           // Default 50% S-Curve
+    state.filterAutoHome[i] = false;      // No auto home by default
+  }
+  state.filterShutterClose = false;       // Don't auto close shutters
+
+  state.filterWheelFitted[1] = false;  // Take wheel 2 away.
+
+  // Shutter initialization
+  for (int i = 0; i < 3; i++) {
+    state.shutterFitted[i] = true;        // All shutters fitted by default
+    state.shutterState[i] = true;         // Closed by default
+    state.shutterDefaultState[i] = true;  // Default to closed on startup
+    state.shutterTimerEnd[i] = 0;         // No timer active
+  }
+
+  // Lumen Pro initialization
+  state.lumenProFitted = true;            // Lumen Pro fitted by default
+  state.lumenProPowerOn = true;           // Default to on
+  state.lumenProCurrentOutput = 0;        // Start at 0% output
+  // Standard 10-position shutter light output settings
+  state.lumenProPositionOutput[0] = 0;    // Position 1: 0%
+  state.lumenProPositionOutput[1] = 11;   // Position 2: 11%
+  state.lumenProPositionOutput[2] = 22;   // Position 3: 22%
+  state.lumenProPositionOutput[3] = 33;   // Position 4: 33%
+  state.lumenProPositionOutput[4] = 44;   // Position 5: 44%
+  state.lumenProPositionOutput[5] = 55;   // Position 6: 55%
+  state.lumenProPositionOutput[6] = 66;   // Position 7: 66%
+  state.lumenProPositionOutput[7] = 77;   // Position 8: 77%
+  state.lumenProPositionOutput[8] = 88;   // Position 9: 88%
+  state.lumenProPositionOutput[9] = 100;  // Position 10: 100%
 }
+
 
 void processCommand(char* cmd) {
   // Trim leading whitespace
@@ -470,6 +546,33 @@ void parseAndExecute(char* cmd) {
   }
   else if (strcmp(command, "UPR") == 0) {
     cmd_UPR(ptr);
+  }
+  else if (strcmp(command, "7") == 0) {
+    cmd_7(ptr);
+  }
+  else if (strcmp(command, "FILTER") == 0) {
+    cmd_Filter(ptr);
+  }
+  else if (strcmp(command, "FPW") == 0) {
+    cmd_FPW(ptr);
+  }
+  else if (strcmp(command, "SAF") == 0) {
+    cmd_SAF(ptr);
+  }
+  else if (strcmp(command, "SCF") == 0) {
+    cmd_SCF(ptr);
+  }
+  else if (strcmp(command, "SMF") == 0) {
+    cmd_SMF(ptr);
+  }
+  else if (strcmp(command, "8") == 0) {
+    cmd_8(ptr);
+  }
+  else if (strcmp(command, "SHUTTER") == 0) {
+    cmd_Shutter(ptr);
+  }
+  else if (strcmp(command, "LIGHT") == 0) {
+    cmd_Light(ptr);
   }
   else {
     // Unknown command - send error
@@ -679,6 +782,18 @@ byte calculateMotionStatus() {
     status |= 0x04;  // Z moving (bit 2)
   }
   return status;
+}
+
+void updateShutterTimers() {
+  // Check each shutter for active timers
+  unsigned long now = millis();
+  for (int i = 0; i < 3; i++) {
+    if (state.shutterTimerEnd[i] > 0 && now >= state.shutterTimerEnd[i]) {
+      // Timer expired - toggle shutter back to opposite state
+      state.shutterState[i] = !state.shutterState[i];
+      state.shutterTimerEnd[i] = 0;  // Clear timer
+    }
+  }
 }
 
 // ============================================================================
@@ -1257,5 +1372,487 @@ void cmd_UPR(char* args) {
       state.micronsPerRevZ = upr;
     }
     Serial.print("0\r");
+  }
+}
+
+// ============================================================================
+// FILTER WHEEL COMMANDS
+// ============================================================================
+
+void cmd_7(char* args) {
+  // Filter wheel control command
+  char* ptr = args;
+
+  // Get first parameter
+  skipDelimiters(&ptr);
+
+  // Check for single letter commands (C or D)
+  if ((*ptr == 'C' || *ptr == 'c') && (*(ptr+1) == '\0' || isDelimiter(*(ptr+1)))) {
+    // Enable automatic shutter closure
+    state.filterShutterClose = true;
+    Serial.print("0\r");
+    return;
+  }
+  if ((*ptr == 'D' || *ptr == 'd') && (*(ptr+1) == '\0' || isDelimiter(*(ptr+1)))) {
+    // Disable automatic shutter closure
+    state.filterShutterClose = false;
+    Serial.print("0\r");
+    return;
+  }
+
+  // Parse wheel number
+  long wheelNum = parseNumber(&ptr);
+
+  // Check for all-wheels command (7 0,f1,f2,f3)
+  if (wheelNum == 0 && !state.compatibilityMode) {
+    // COMP 0 mode - move all wheels
+    long f1 = parseNumber(&ptr);
+    long f2 = parseNumber(&ptr);
+    long f3 = parseNumber(&ptr);
+
+    // Move each fitted wheel
+    if (state.filterWheelFitted[0] && f1 > 0 && f1 <= state.filterPositionsPerWheel[0]) {
+      state.filterPosition[0] = f1;
+    }
+    if (state.filterWheelFitted[1] && f2 > 0 && f2 <= state.filterPositionsPerWheel[1]) {
+      state.filterPosition[1] = f2;
+    }
+    if (state.filterWheelFitted[2] && f3 > 0 && f3 <= state.filterPositionsPerWheel[2]) {
+      state.filterPosition[2] = f3;
+    }
+    Serial.print("R\r");
+    return;
+  }
+
+  // Validate wheel number (1-3)
+  if (wheelNum < 1 || wheelNum > 3) {
+    Serial.print("E,1\r");  // Invalid parameter
+    return;
+  }
+
+  int wheelIdx = wheelNum - 1;
+
+  // Check if wheel is fitted
+  if (!state.filterWheelFitted[wheelIdx]) {
+    Serial.print("E,17\r");  // No wheel fitted
+    return;
+  }
+
+  // Get the filter parameter (can be number or letter)
+  skipDelimiters(&ptr);
+
+  // Check for letter commands
+  if (*ptr == 'N' || *ptr == 'n') {
+    // Next filter
+    state.filterPosition[wheelIdx]++;
+    if (state.filterPosition[wheelIdx] > state.filterPositionsPerWheel[wheelIdx]) {
+      state.filterPosition[wheelIdx] = 1;  // Wrap around
+    }
+    Serial.print("R\r");
+    return;
+  }
+  else if (*ptr == 'P' || *ptr == 'p') {
+    // Previous filter
+    state.filterPosition[wheelIdx]--;
+    if (state.filterPosition[wheelIdx] < 1) {
+      state.filterPosition[wheelIdx] = state.filterPositionsPerWheel[wheelIdx];  // Wrap around
+    }
+    Serial.print("R\r");
+    return;
+  }
+  else if (*ptr == 'F' || *ptr == 'f') {
+    // Report current filter position
+    Serial.print(state.filterPosition[wheelIdx]);
+    Serial.print("\r");
+    return;
+  }
+  else if (*ptr == 'H' || *ptr == 'h') {
+    // Home routine
+    state.filterPosition[wheelIdx] = 1;  // Return to position 1
+    Serial.print("R\r");
+    return;
+  }
+  else if (*ptr == 'A' || *ptr == 'a') {
+    // Auto home on startup
+    state.filterAutoHome[wheelIdx] = true;
+    Serial.print("R\r");
+    return;
+  }
+  else if (*ptr == 'D' || *ptr == 'd') {
+    // Disable auto home on startup
+    state.filterAutoHome[wheelIdx] = false;
+    Serial.print("R\r");
+    return;
+  }
+  else {
+    // Numeric position
+    long position = parseNumber(&ptr);
+    if (position < 1 || position > state.filterPositionsPerWheel[wheelIdx]) {
+      Serial.print("E,1\r");  // Invalid position
+      return;
+    }
+    state.filterPosition[wheelIdx] = position;
+    Serial.print("R\r");
+  }
+}
+
+void cmd_Filter(char* args) {
+  // FILTER command - print information about filter wheel
+  long wheelNum = parseNumber(&args);
+
+  if (wheelNum < 1 || wheelNum > 3) {
+    Serial.print("E,1\r");
+    return;
+  }
+
+  int wheelIdx = wheelNum - 1;
+
+  // Print filter wheel information
+  Serial.print("FILTER_");
+  Serial.print(wheelNum);
+  Serial.print(" = ");
+
+  if (state.filterWheelFitted[wheelIdx]) {
+    Serial.print("HF110-10\r");  // Example model
+  } else {
+    Serial.print("NONE\r");
+  }
+
+  Serial.print("TYPE = 3\r");
+  Serial.print("PULSES PER REV = 67200\r");
+  Serial.print("FILTERS PER WHEEL = ");
+  Serial.print(state.filterPositionsPerWheel[wheelIdx]);
+  Serial.print("\r");
+  Serial.print("OFFSET = 10080\r");
+  Serial.print("HOME AT STARTUP = ");
+  Serial.print(state.filterAutoHome[wheelIdx] ? "TRUE\r" : "FALSE\r");
+  Serial.print("SHUTTERS CLOSED = ");
+  Serial.print(state.filterShutterClose ? "TRUE\r" : "FALSE\r");
+  Serial.print("END\r");
+}
+
+void cmd_FPW(char* args) {
+  // FPW - Filter Positions per Wheel
+  char* ptr = args;
+  long wheelNum = parseNumber(&ptr);
+
+  if (wheelNum < 1 || wheelNum > 3) {
+    Serial.print("E,1\r");
+    return;
+  }
+
+  int wheelIdx = wheelNum - 1;
+
+  skipDelimiters(&ptr);
+
+  if (*ptr == '\0') {
+    // Report number of filter positions
+    Serial.print(state.filterPositionsPerWheel[wheelIdx]);
+    Serial.print("\r");
+  } else {
+    // Set number of filter positions
+    long positions = parseNumber(&ptr);
+    if (positions > 0 && positions <= 20) {  // Reasonable limit
+      state.filterPositionsPerWheel[wheelIdx] = positions;
+      // Make sure current position is valid
+      if (state.filterPosition[wheelIdx] > positions) {
+        state.filterPosition[wheelIdx] = positions;
+      }
+    }
+    Serial.print("0\r");
+  }
+}
+
+void cmd_SAF(char* args) {
+  // SAF - Set/report filter wheel Acceleration
+  char* ptr = args;
+  long wheelNum = parseNumber(&ptr);
+
+  if (wheelNum < 1 || wheelNum > 3) {
+    Serial.print("E,1\r");
+    return;
+  }
+
+  int wheelIdx = wheelNum - 1;
+
+  skipDelimiters(&ptr);
+
+  if (*ptr == '\0') {
+    // Report acceleration
+    Serial.print(state.filterAccel[wheelIdx]);
+    Serial.print("\r");
+  } else {
+    // Set acceleration
+    long accel = parseNumber(&ptr);
+    if (accel >= 1 && accel <= 100) {
+      state.filterAccel[wheelIdx] = accel;
+    }
+    Serial.print("0\r");
+  }
+}
+
+void cmd_SCF(char* args) {
+  // SCF - Set/report filter wheel S-Curve
+  char* ptr = args;
+  long wheelNum = parseNumber(&ptr);
+
+  if (wheelNum < 1 || wheelNum > 3) {
+    Serial.print("E,1\r");
+    return;
+  }
+
+  int wheelIdx = wheelNum - 1;
+
+  skipDelimiters(&ptr);
+
+  if (*ptr == '\0') {
+    // Report S-Curve
+    Serial.print(state.filterSCurve[wheelIdx]);
+    Serial.print("\r");
+  } else {
+    // Set S-Curve
+    long scurve = parseNumber(&ptr);
+    if (scurve >= 1 && scurve <= 100) {
+      state.filterSCurve[wheelIdx] = scurve;
+    }
+    Serial.print("0\r");
+  }
+}
+
+void cmd_SMF(char* args) {
+  // SMF - Set/report filter wheel Maximum speed
+  char* ptr = args;
+  long wheelNum = parseNumber(&ptr);
+
+  if (wheelNum < 1 || wheelNum > 3) {
+    Serial.print("E,1\r");
+    return;
+  }
+
+  int wheelIdx = wheelNum - 1;
+
+  skipDelimiters(&ptr);
+
+  if (*ptr == '\0') {
+    // Report speed
+    Serial.print(state.filterSpeed[wheelIdx]);
+    Serial.print("\r");
+  } else {
+    // Set speed
+    long speed = parseNumber(&ptr);
+    if (speed >= 1 && speed <= 100) {
+      state.filterSpeed[wheelIdx] = speed;
+    }
+    Serial.print("0\r");
+  }
+}
+
+// ============================================================================
+// SHUTTER COMMANDS
+// ============================================================================
+
+void cmd_8(char* args) {
+  // Shutter control command
+  char* ptr = args;
+
+  // Parse shutter number
+  long shutterNum = parseNumber(&ptr);
+
+  // Check for set-default-state command (8 0,s1,s2,s3)
+  if (shutterNum == 0) {
+    long s1 = parseNumber(&ptr);
+    long s2 = parseNumber(&ptr);
+    long s3 = parseNumber(&ptr);
+
+    // Set default states
+    if (s1 >= 0 && s1 <= 1) {
+      state.shutterDefaultState[0] = (s1 == 1);  // 0=open, 1=closed
+    }
+    if (s2 >= 0 && s2 <= 1) {
+      state.shutterDefaultState[1] = (s2 == 1);
+    }
+    if (s3 >= 0 && s3 <= 1) {
+      state.shutterDefaultState[2] = (s3 == 1);
+    }
+    Serial.print("0\r");
+    return;
+  }
+
+  // Validate shutter number (1-3)
+  if (shutterNum < 1 || shutterNum > 3) {
+    Serial.print("E,1\r");  // Invalid parameter
+    return;
+  }
+
+  int shutterIdx = shutterNum - 1;
+
+  // Check if shutter is fitted
+  if (!state.shutterFitted[shutterIdx]) {
+    Serial.print("E,20\r");  // Shutter not fitted
+    return;
+  }
+
+  skipDelimiters(&ptr);
+
+  // Check if this is a status query (only shutter number provided)
+  if (*ptr == '\0') {
+    // Return shutter status (0=open, 1=closed)
+    Serial.print(state.shutterState[shutterIdx] ? "1\r" : "0\r");
+    return;
+  }
+
+  // Parse command parameter (0=open, 1=close)
+  long command = parseNumber(&ptr);
+
+  if (command != 0 && command != 1) {
+    Serial.print("E,1\r");  // Invalid parameter
+    return;
+  }
+
+  // Check for optional timer parameter
+  skipDelimiters(&ptr);
+  long timerMs = 0;
+  if (*ptr != '\0') {
+    timerMs = parseNumber(&ptr);
+  }
+
+  // Set shutter state
+  state.shutterState[shutterIdx] = (command == 1);  // 0=open, 1=closed
+
+  // Set timer if specified
+  if (timerMs > 0) {
+    state.shutterTimerEnd[shutterIdx] = millis() + timerMs;
+  } else {
+    state.shutterTimerEnd[shutterIdx] = 0;  // No timer
+  }
+
+  Serial.print("R\r");
+}
+
+void cmd_Shutter(char* args) {
+  // SHUTTER command - print information about shutter
+  long shutterNum = parseNumber(&args);
+
+  if (shutterNum < 1 || shutterNum > 3) {
+    Serial.print("E,1\r");
+    return;
+  }
+
+  int shutterIdx = shutterNum - 1;
+
+  // Print shutter information
+  Serial.print("SHUTTER_");
+  Serial.print(shutterNum);
+  Serial.print(" = ");
+
+  if (state.shutterFitted[shutterIdx]) {
+    Serial.print("NORMAL\r");
+  } else {
+    Serial.print("NONE\r");
+  }
+
+  Serial.print("DEFAULT_STATE=");
+  Serial.print(state.shutterDefaultState[shutterIdx] ? "CLOSED\r" : "OPEN\r");
+  Serial.print("END\r");
+}
+
+// ============================================================================
+// LUMEN PRO COMMANDS
+// ============================================================================
+
+void cmd_Light(char* args) {
+  // LIGHT command - Lumen Pro control
+  char* ptr = args;
+
+  // Check if Lumen Pro is fitted
+  if (!state.lumenProFitted) {
+    Serial.print("E,20\r");  // Shutter/device not fitted
+    return;
+  }
+
+  skipDelimiters(&ptr);
+
+  // If no arguments, report current light output
+  if (*ptr == '\0') {
+    Serial.print(state.lumenProCurrentOutput);
+    Serial.print("\r");
+    return;
+  }
+
+  // Check for POWER sub-command
+  char testCmd[16];
+  char* tmpPtr = ptr;
+  extractCommand(&tmpPtr, testCmd, sizeof(testCmd));
+
+  if (strcmp(testCmd, "POWER") == 0) {
+    // LIGHT POWER command
+    ptr = tmpPtr;
+    skipDelimiters(&ptr);
+
+    if (*ptr == '\0') {
+      // Report power status
+      Serial.print(state.lumenProPowerOn ? "1\r" : "0\r");
+    } else {
+      // Set power status
+      long powerState = parseNumber(&ptr);
+      if (powerState == 0 || powerState == 1) {
+        state.lumenProPowerOn = (powerState == 1);
+        Serial.print("R\r");
+      } else {
+        Serial.print("E,1\r");
+      }
+    }
+    return;
+  }
+
+  // Check if first parameter is a number or letter
+  if (*ptr == 'h' || *ptr == 'H') {
+    // Home routine
+    state.lumenProCurrentOutput = 0;
+    Serial.print("0\r");
+    return;
+  }
+
+  // Parse first parameter
+  long param1 = parseNumber(&ptr);
+
+  skipDelimiters(&ptr);
+
+  // Check if there's a second parameter
+  if (*ptr == '\0') {
+    // Single number parameter: LIGHT n - Set light output to n%
+    if (param1 >= 0 && param1 <= 100) {
+      state.lumenProCurrentOutput = param1;
+      Serial.print("0\r");
+    } else {
+      Serial.print("E,1\r");  // Invalid parameter
+    }
+    return;
+  }
+
+  // Two parameters: Either LIGHT P,n or LIGHT P,?
+  // param1 is position P
+  if (param1 < 1 || param1 > 10) {
+    Serial.print("E,1\r");  // Invalid position
+    return;
+  }
+
+  int posIdx = param1 - 1;
+
+  // Check if second parameter is '?'
+  if (*ptr == '?') {
+    // LIGHT P,? - Report % output of position P
+    Serial.print(state.lumenProPositionOutput[posIdx]);
+    Serial.print("\r");
+    return;
+  }
+
+  // LIGHT P,n - Set position P to n% light output
+  long lightOutput = parseNumber(&ptr);
+  if (lightOutput >= 0 && lightOutput <= 100) {
+    state.lumenProPositionOutput[posIdx] = lightOutput;
+    Serial.print("0\r");
+  } else {
+    Serial.print("E,1\r");  // Invalid parameter
   }
 }
