@@ -297,10 +297,10 @@ void initializeState() {
   state.backlashZJoy = false;
   state.backlashZJoyValue = 0;
 
-  // Resolution (default 1 micron)
-  state.resolutionX = 1.0;
-  state.resolutionY = 1.0;
-  state.resolutionZ = 1.0;
+  // Resolution (default 0.15 micron)
+  state.resolutionX = 0.15;
+  state.resolutionY = 0.15;
+  state.resolutionZ = 0.15;
 
   // Default Z microns per revolution
   state.micronsPerRevZ = 100.0;
